@@ -1,0 +1,28 @@
+{
+  "ConfigVersion": 2,
+  "ActiveProfileId": "home",
+  "AutoSwitchEnabled": true,
+  "Profiles": [
+    {
+      "Id": "home",
+      "Name": "家里",
+      "WebDavUrl": "https://example.com/webdav/home",
+      "Username": "username",
+      "Password": "password",
+      "UploadHotkey": "Ctrl+Shift+C",
+      "DownloadHotkey": "Ctrl+Shift+V",
+      "UploadLimitBytes": 943718400,
+      "TempLimitBytes": 1073741824,
+      "UseImageType": true,
+      "StartWithWindows": false,
+      "NotifySuccess": true,
+      "NotifyFailure": true,
+      "MonitorClipboard": false,
+      "AutoMatchEnabled": true,
+      "AutoMatchMode": "All",
+      "NetworkType": "WiFi",
+      "IpRanges": "192.168.1.0/24",
+      "NetworkNames": "HomeWiFi"
+    }
+  ]
+}
