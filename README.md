@@ -1,0 +1,2 @@
+# SyncClipboardWin
+AI写的兼容syncclipboard的webdav存取协议的windows客户端,支持快捷键和剪切版变化时上传下载
