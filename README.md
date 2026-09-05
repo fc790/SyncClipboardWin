@@ -1,4 +1,4 @@
-这是一个兼容syncclipboard协议webdav服务器的windows客户端,用AI写的,所以以下内容是AI的描述
+这是一个兼容syncclipboard协议webdav服务器的windows客户端,我还让AI写了个python的简单的生成webdav的软件.配合那个可以很容易的搭建云剪切板(云剪贴板),用AI写的,所以以下内容是AI的描述
 
  # SyncClipboardWin 0.3.0 - Windows 10 built-in compiler edition
 
