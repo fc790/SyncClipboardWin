@@ -13,11 +13,18 @@ namespace SyncClipboardWin
     public sealed class SyncService
     {
         private readonly Func<AppSettings> _settingsProvider;
+        private readonly DirectTransferManager _direct = new DirectTransferManager();
+        private volatile bool _cancelRequested;
 
         public SyncService(Func<AppSettings> settingsProvider)
         {
             _settingsProvider = settingsProvider;
         }
+
+        public void BeginOperation() { _cancelRequested = false; }
+        public void CancelCurrent() { _cancelRequested = true; }
+        private bool IsCancelled() { return _cancelRequested; }
+        private void ThrowIfCancelled() { if (_cancelRequested) throw new OperationCanceledException("传输已取消。"); }
 
         public async Task<string> UploadAsync(Action<TransferProgress> progress)
         {
@@ -85,75 +92,115 @@ namespace SyncClipboardWin
         {
             AppSettings settings = _settingsProvider();
             Validate(settings);
+            ThrowIfCancelled();
 
             using (WebDavClient client = new WebDavClient(settings))
             {
-                SyncClipboardModel meta =
-                    await client.GetMetadataAsync();
+                SyncClipboardModel meta = await client.GetMetadataAsync();
+                DirectTransferInfo direct = null;
 
-                if (string.Equals(
-                    meta.Type,
-                    "Text",
-                    StringComparison.OrdinalIgnoreCase))
+                if (settings.DirectTransferEnabled &&
+                    string.Equals(meta.Type, "Text", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { direct = await client.GetDirectInfoAsync(); } catch { direct = null; }
+                }
+
+                if (direct != null &&
+                    !string.IsNullOrWhiteSpace(direct.TransferId) &&
+                    (meta.Text ?? "").IndexOf(direct.TransferId, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    (string.Equals(direct.Status, "waiting", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(direct.Status, "upload_requested", StringComparison.OrdinalIgnoreCase)))
+                {
+                    string targetDir;
+                    bool inExplorer;
+                    ResolveTargetDirectory(settings, out targetDir, out inExplorer);
+                    string localPath = GetUniquePath(Path.Combine(targetDir, direct.FileName));
+
+                    bool directOk = false;
+                    if (string.Equals(direct.Status, "waiting", StringComparison.OrdinalIgnoreCase))
+                    {
+                        directOk = await _direct.ReceiveAsync(direct, localPath, progress, IsCancelled);
+                        if (directOk)
+                        {
+                            ThrowIfCancelled();
+                            if (!string.IsNullOrWhiteSpace(direct.Hash))
+                            {
+                                string actual = await Sha256FileAsync(localPath);
+                                if (!string.Equals(actual, direct.Hash, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    try { File.Delete(localPath); } catch { }
+                                    directOk = false;
+                                }
+                            }
+                        }
+                    }
+
+                    if (directOk)
+                        return FinishDownloadedFile(direct.Type, localPath, targetDir, inExplorer);
+
+                    direct.Status = "upload_requested";
+                    await client.PutDirectInfoAsync(direct);
+
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(60);
+                    while (DateTime.UtcNow < deadline)
+                    {
+                        ThrowIfCancelled();
+                        if (progress != null)
+                            progress(new TransferProgress("等待发送端上传云端副本", direct.FileName, 0, -1));
+                        await Task.Delay(2000);
+                        meta = await client.GetMetadataAsync();
+                        if (meta.HasData && !string.IsNullOrWhiteSpace(meta.DataName) &&
+                            (string.IsNullOrWhiteSpace(direct.Hash) ||
+                             string.Equals(meta.Hash, direct.Hash, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            localPath = GetUniquePath(Path.Combine(targetDir, meta.DataName));
+                            await client.DownloadFileAsync(meta.DataName, localPath, progress, IsCancelled);
+                            return FinishDownloadedFile(meta.Type, localPath, targetDir, inExplorer);
+                        }
+                    }
+
+                    throw new IOException("局域网直传失败，已请求发送端上传 WebDAV，但 60 秒内未等到云端文件。请确认发送端程序仍在运行。\n");
+                }
+
+                if (string.Equals(meta.Type, "Text", StringComparison.OrdinalIgnoreCase))
                 {
                     ClipboardHelper.PasteText(meta.Text ?? "");
-                    return string.Format(
-                        "已粘贴文本（{0} 字符）",
-                        (meta.Text ?? "").Length);
+                    return string.Format("已粘贴文本（{0} 字符）", (meta.Text ?? "").Length);
                 }
 
-                if (!meta.HasData ||
-                    string.IsNullOrWhiteSpace(meta.DataName))
-                {
-                    throw new InvalidDataException(
-                        "云端记录没有可下载的数据文件。");
-                }
+                if (!meta.HasData || string.IsNullOrWhiteSpace(meta.DataName))
+                    throw new InvalidDataException("云端记录没有可下载的数据文件。");
 
-                string explorerDir;
-                List<string> ignoredSelection;
-                bool inExplorer =
-                    ExplorerHelper.TryGetActiveExplorer(
-                        out explorerDir,
-                        out ignoredSelection) &&
-                    !string.IsNullOrWhiteSpace(explorerDir);
-
-                string targetDir =
-                    inExplorer
-                        ? explorerDir
-                        : AppSettings.TempDirectory;
-
-                Directory.CreateDirectory(targetDir);
-
-                if (!inExplorer)
-                    CleanupTempDirectory(settings.TempLimitBytes);
-
-                string localPath = GetUniquePath(
-                    Path.Combine(targetDir, meta.DataName));
-
-                await client.DownloadFileAsync(
-                    meta.DataName,
-                    localPath,
-                    progress);
-
-                if (string.Equals(
-                    meta.Type,
-                    "Group",
-                    StringComparison.OrdinalIgnoreCase))
-                {
-                    ExtractZipOverwrite(localPath, targetDir);
-                    File.Delete(localPath);
-                    return "已下载并解压到：" + targetDir;
-                }
-
-                if (!inExplorer)
-                    ClipboardHelper.PasteFile(localPath);
-
-                if (inExplorer)
-                    return "已下载到：" + localPath;
-
-                return "已下载并粘贴：" +
-                       Path.GetFileName(localPath);
+                string normalTargetDir;
+                bool normalInExplorer;
+                ResolveTargetDirectory(settings, out normalTargetDir, out normalInExplorer);
+                string normalLocalPath = GetUniquePath(Path.Combine(normalTargetDir, meta.DataName));
+                await client.DownloadFileAsync(meta.DataName, normalLocalPath, progress, IsCancelled);
+                return FinishDownloadedFile(meta.Type, normalLocalPath, normalTargetDir, normalInExplorer);
             }
+        }
+
+        private static void ResolveTargetDirectory(AppSettings settings, out string targetDir, out bool inExplorer)
+        {
+            string explorerDir;
+            List<string> ignoredSelection;
+            inExplorer = ExplorerHelper.TryGetActiveExplorer(out explorerDir, out ignoredSelection) &&
+                         !string.IsNullOrWhiteSpace(explorerDir);
+            targetDir = inExplorer ? explorerDir : AppSettings.TempDirectory;
+            Directory.CreateDirectory(targetDir);
+            if (!inExplorer) CleanupTempDirectory(settings.TempLimitBytes);
+        }
+
+        private static string FinishDownloadedFile(string type, string localPath, string targetDir, bool inExplorer)
+        {
+            if (string.Equals(type, "Group", StringComparison.OrdinalIgnoreCase))
+            {
+                ExtractZipOverwrite(localPath, targetDir);
+                File.Delete(localPath);
+                return "已下载并解压到：" + targetDir;
+            }
+            if (!inExplorer) ClipboardHelper.PasteFile(localPath);
+            return inExplorer ? "已下载到：" + localPath : "已下载并粘贴：" + Path.GetFileName(localPath);
         }
 
         public async Task TestConnectionAsync()
@@ -188,6 +235,7 @@ namespace SyncClipboardWin
                 progress(new TransferProgress(
                     "上传文本", "", 0, Math.Max(1, text.Length)));
 
+            _direct.ClearPending();
             using (WebDavClient client =
                 new WebDavClient(settings))
             {
@@ -294,6 +342,7 @@ namespace SyncClipboardWin
                     progress(new TransferProgress(
                         "计算校验", remoteName, 0, -1));
 
+                ThrowIfCancelled();
                 string hash =
                     await Sha256FileAsync(uploadPath);
 
@@ -307,21 +356,37 @@ namespace SyncClipboardWin
                 model.DataName = remoteName;
                 model.Size = size;
 
-                using (WebDavClient client =
-                    new WebDavClient(settings))
+                using (WebDavClient client = new WebDavClient(settings))
                 {
+                    ThrowIfCancelled();
+                    if (settings.DirectTransferEnabled)
+                    {
+                        DirectTransferInfo info = _direct.RegisterOutgoing(
+                            settings, uploadPath, tempZip != null, model);
+                        await client.PutDirectInfoAsync(info);
+
+                        SyncClipboardModel compatibility = new SyncClipboardModel();
+                        compatibility.Type = "Text";
+                        compatibility.Hash = hash;
+                        compatibility.Text = string.Format(
+                            "文件“{0}”正在等待局域网直传。若客户端不支持 SyncClipboardWin 直传，请稍后重试云端下载。 [Direct:{1}]",
+                            displayText, info.TransferId);
+                        compatibility.HasData = false;
+                        compatibility.DataName = null;
+                        compatibility.Size = compatibility.Text.Length;
+                        await client.PutMetadataAsync(compatibility);
+
+                        if (tempZip != null) tempZip = null; // 临时包交给直传管理器保留
+                        return "已发布局域网直传：" + displayText;
+                    }
+
+                    _direct.ClearPending();
                     await client.ResetFileDirectoryAsync();
-                    await client.UploadFileAsync(
-                        uploadPath,
-                        remoteName,
-                        progress);
+                    await client.UploadFileAsync(uploadPath, remoteName, progress, IsCancelled);
                     await client.PutMetadataAsync(model);
                 }
 
-                return string.Format(
-                    "已上传 {0}：{1}",
-                    type,
-                    displayText);
+                return string.Format("已上传 {0}：{1}", type, displayText);
             }
             finally
             {
@@ -332,6 +397,53 @@ namespace SyncClipboardWin
                 }
             }
         }
+
+        public async Task CheckPendingDirectUploadAsync()
+        {
+            PendingDirectTransfer pending = _direct.GetPending();
+            if (pending == null || pending.Info == null || !File.Exists(pending.LocalPath)) return;
+            try
+            {
+                using (WebDavClient client = new WebDavClient(pending.Settings))
+                {
+                    DirectTransferInfo remote = await client.GetDirectInfoAsync();
+                    if (remote == null ||
+                        !string.Equals(remote.TransferId, pending.Info.TransferId, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(remote.Status, "upload_requested", StringComparison.OrdinalIgnoreCase)) return;
+
+                    await client.ResetFileDirectoryAsync();
+                    await client.UploadFileAsync(pending.LocalPath, pending.StandardModel.DataName, null, delegate { return pending.CancelRequested; });
+                    await client.PutMetadataAsync(pending.StandardModel);
+                    remote.Status = "uploaded";
+                    await client.PutDirectInfoAsync(remote);
+                    _direct.CompletePending(remote.TransferId);
+                }
+            }
+            catch { }
+        }
+
+        public async Task CancelPendingDirectAsync()
+        {
+            PendingDirectTransfer pending = _direct.GetPending();
+            if (pending == null) return;
+            pending.CancelRequested = true;
+            try
+            {
+                using (WebDavClient client = new WebDavClient(pending.Settings))
+                {
+                    DirectTransferInfo remote = await client.GetDirectInfoAsync();
+                    if (remote != null && string.Equals(remote.TransferId, pending.Info.TransferId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        remote.Status = "cancelled";
+                        await client.PutDirectInfoAsync(remote);
+                    }
+                }
+            }
+            catch { }
+            _direct.CompletePending(pending.Info.TransferId);
+        }
+
+        public void Dispose() { _direct.Dispose(); }
 
         private static void CreateZip(
             List<string> paths,

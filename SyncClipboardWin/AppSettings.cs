@@ -22,9 +22,12 @@ namespace SyncClipboardWin
         public bool NotifySuccess { get; set; }
         public bool NotifyFailure { get; set; }
         public bool MonitorClipboard { get; set; }
+        public bool DirectTransferEnabled { get; set; }
+        public int DirectTransferPort { get; set; }
 
         // 自动网络匹配规则
         public bool AutoMatchEnabled { get; set; }
+        public bool AutoMatchDefault { get; set; } // 仅当其他自动匹配规则都不满足时使用
         public string AutoMatchMode { get; set; }   // Any / All
         public string NetworkType { get; set; }     // Any / WiFi / Ethernet / Other / 空=不参与
         public string IpRanges { get; set; }        // 每行/分号一个规则
@@ -46,7 +49,10 @@ namespace SyncClipboardWin
             NotifySuccess = true;
             NotifyFailure = true;
             MonitorClipboard = false;
+            DirectTransferEnabled = false;
+            DirectTransferPort = 45678;
             AutoMatchEnabled = false;
+            AutoMatchDefault = false;
             AutoMatchMode = "All";
             NetworkType = "";
             IpRanges = "";
@@ -138,6 +144,7 @@ namespace SyncClipboardWin
             if (Profiles.Count == 0)
                 Profiles.Add(new AppSettings());
 
+            bool defaultFound = false;
             for (int i = 0; i < Profiles.Count; i++)
             {
                 AppSettings p = Profiles[i];
@@ -147,6 +154,17 @@ namespace SyncClipboardWin
                     p.Name = "配置 " + (i + 1).ToString();
                 if (string.IsNullOrWhiteSpace(p.AutoMatchMode))
                     p.AutoMatchMode = "All";
+                if (p.DirectTransferPort < 1 || p.DirectTransferPort > 65535)
+                    p.DirectTransferPort = 45678;
+
+                // 默认回退配置全局只能有一个；如果配置文件被手工改出多个，保留第一个。
+                if (p.AutoMatchDefault)
+                {
+                    if (!defaultFound)
+                        defaultFound = true;
+                    else
+                        p.AutoMatchDefault = false;
+                }
             }
 
             bool activeFound = false;

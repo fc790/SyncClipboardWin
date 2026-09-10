@@ -29,10 +29,13 @@ namespace SyncClipboardWin
         private readonly CheckBox notifyOk;
         private readonly CheckBox notifyFail;
         private readonly CheckBox monitorClipboard;
+        private readonly CheckBox directTransfer;
+        private readonly NumericUpDown directPort;
         private readonly TextBox configPath;
 
         private readonly CheckBox autoSwitch;
         private readonly CheckBox autoMatch;
+        private readonly CheckBox autoMatchDefault;
         private readonly ComboBox matchMode;
         private readonly ComboBox networkType;
         private readonly TextBox ipRanges;
@@ -86,6 +89,8 @@ namespace SyncClipboardWin
             notifyOk = MakeCheck("成功时通知");
             notifyFail = MakeCheck("失败时通知");
             monitorClipboard = MakeCheck("监测剪贴板变化并自动上传");
+            directTransfer = MakeCheck("启用局域网点对点文件传输（WebDAV 兜底）");
+            directPort = new NumericUpDown(); directPort.Minimum = 1; directPort.Maximum = 65535; directPort.Width = 120;
 
             configPath = new TextBox();
             configPath.Width = 420;
@@ -95,6 +100,7 @@ namespace SyncClipboardWin
             autoSwitch = MakeCheck("启用按网络环境自动切换配置");
             autoSwitch.Checked = _config.AutoSwitchEnabled;
             autoMatch = MakeCheck("此配置参与自动匹配");
+            autoMatchDefault = MakeCheck("此配置作为默认回退配置（其他规则都不匹配时使用）");
 
             matchMode = new ComboBox();
             matchMode.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -211,6 +217,11 @@ namespace SyncClipboardWin
             AddRow(table, r++, "", notifyOk);
             AddRow(table, r++, "", notifyFail);
             AddRow(table, r++, "", monitorClipboard);
+            AddRow(table, r++, "", directTransfer);
+            AddRow(table, r++, "直传 TCP 端口", directPort);
+            Label directHelp = new Label(); directHelp.AutoSize = true; directHelp.MaximumSize = new Size(560, 0);
+            directHelp.Text = "开启后，文件先发布 SyncClipboard.direct.json 并等待局域网直传；普通 SyncClipboard.json 暂时只显示兼容提示。若接收端直连失败，会请求发送端再上传到 WebDAV。TCP 端口需允许通过 Windows 防火墙。";
+            AddRow(table, r++, "直传说明", directHelp);
             AddRow(table, r++, "配置文件", configPath);
 
             scroll.Controls.Add(table);
@@ -231,7 +242,8 @@ namespace SyncClipboardWin
             help.AutoSize = true;
             help.MaximumSize = new Size(560, 0);
             help.Text =
-                "自动切换会依次检查配置列表，遇到第一个匹配的配置就切换。\r\n" +
+                "自动切换会依次检查非默认配置，遇到第一个匹配的配置就切换。\r\n" +
+                "如果所有普通匹配规则都不满足，则切换到默认回退配置。默认回退配置全局只能有一个。\r\n" +
                 "网络名称会匹配 Wi-Fi SSID、网卡名称和网卡描述；名称使用“包含”匹配。";
 
             Label ipHelp = new Label();
@@ -249,6 +261,7 @@ namespace SyncClipboardWin
             AddRow(table, r++, "", autoSwitch);
             AddRow(table, r++, "说明", help);
             AddRow(table, r++, "", autoMatch);
+            AddRow(table, r++, "", autoMatchDefault);
             AddRow(table, r++, "条件组合方式", matchMode);
             AddRow(table, r++, "网络类型", networkType);
             AddRow(table, r++, "IPv4 范围", ipRanges);
@@ -356,8 +369,11 @@ namespace SyncClipboardWin
                 notifyOk.Checked = p.NotifySuccess;
                 notifyFail.Checked = p.NotifyFailure;
                 monitorClipboard.Checked = p.MonitorClipboard;
+                directTransfer.Checked = p.DirectTransferEnabled;
+                directPort.Value = ClampDecimal(p.DirectTransferPort, 1, 65535);
 
                 autoMatch.Checked = p.AutoMatchEnabled;
+                autoMatchDefault.Checked = p.AutoMatchDefault;
                 matchMode.SelectedIndex = string.Equals(p.AutoMatchMode, "Any", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
 
                 if (string.Equals(p.NetworkType, "WiFi", StringComparison.OrdinalIgnoreCase)) networkType.SelectedIndex = 1;
@@ -394,8 +410,19 @@ namespace SyncClipboardWin
             _editingProfile.NotifySuccess = notifyOk.Checked;
             _editingProfile.NotifyFailure = notifyFail.Checked;
             _editingProfile.MonitorClipboard = monitorClipboard.Checked;
+            _editingProfile.DirectTransferEnabled = directTransfer.Checked;
+            _editingProfile.DirectTransferPort = (int)directPort.Value;
 
             _editingProfile.AutoMatchEnabled = autoMatch.Checked;
+            _editingProfile.AutoMatchDefault = autoMatchDefault.Checked;
+            if (_editingProfile.AutoMatchDefault)
+            {
+                for (int i = 0; i < _config.Profiles.Count; i++)
+                {
+                    if (!object.ReferenceEquals(_config.Profiles[i], _editingProfile))
+                        _config.Profiles[i].AutoMatchDefault = false;
+                }
+            }
             _editingProfile.AutoMatchMode = matchMode.SelectedIndex == 1 ? "Any" : "All";
             if (networkType.SelectedIndex == 1) _editingProfile.NetworkType = "WiFi";
             else if (networkType.SelectedIndex == 2) _editingProfile.NetworkType = "Ethernet";

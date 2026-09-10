@@ -19,10 +19,13 @@
       "NotifyFailure": true,
       "MonitorClipboard": false,
       "AutoMatchEnabled": true,
+      "AutoMatchDefault": false,
       "AutoMatchMode": "All",
       "NetworkType": "WiFi",
       "IpRanges": "192.168.1.0/24",
-      "NetworkNames": "HomeWiFi"
+      "NetworkNames": "HomeWiFi",
+      "DirectTransferEnabled": true,
+      "DirectTransferPort": 45678
     }
   ]
 }

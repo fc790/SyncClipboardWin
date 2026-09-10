@@ -33,7 +33,7 @@ namespace SyncClipboardWin
             req.AllowAutoRedirect = true;
             req.Timeout = 100000;
             req.ReadWriteTimeout = 100000;
-            req.UserAgent = "SyncClipboardWin/0.2.3";
+            req.UserAgent = "SyncClipboardWin/0.3.2";
             req.Headers[HttpRequestHeader.Authorization] = _authHeader;
             req.Headers["Depth"] = "1";
             return req;
@@ -137,6 +137,50 @@ namespace SyncClipboardWin
             }
         }
 
+        public async Task<DirectTransferInfo> GetDirectInfoAsync()
+        {
+            HttpWebRequest req = CreateRequest(Root + "/SyncClipboard.direct.json", "GET");
+            try
+            {
+                using (HttpWebResponse res = (HttpWebResponse)await req.GetResponseAsync())
+                {
+                    EnsureSuccess(res);
+                    string json;
+                    using (StreamReader reader = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                        json = await reader.ReadToEndAsync();
+                    JavaScriptSerializer serializer = new JavaScriptSerializer();
+                    return serializer.Deserialize<DirectTransferInfo>(json);
+                }
+            }
+            catch (WebException ex)
+            {
+                HttpWebResponse response = ex.Response as HttpWebResponse;
+                if (response != null && response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    response.Close();
+                    return null;
+                }
+                throw BuildWebDavException(ex);
+            }
+        }
+
+        public async Task PutDirectInfoAsync(DirectTransferInfo info)
+        {
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            byte[] data = Encoding.UTF8.GetBytes(serializer.Serialize(info));
+            HttpWebRequest req = CreateRequest(Root + "/SyncClipboard.direct.json", "PUT");
+            req.ContentType = "application/json; charset=utf-8";
+            req.ContentLength = data.Length;
+            try
+            {
+                using (Stream requestStream = await req.GetRequestStreamAsync())
+                    await requestStream.WriteAsync(data, 0, data.Length);
+                using (HttpWebResponse res = (HttpWebResponse)await req.GetResponseAsync())
+                    EnsureSuccess(res);
+            }
+            catch (WebException ex) { throw BuildWebDavException(ex); }
+        }
+
         public async Task ResetFileDirectoryAsync()
         {
             HttpWebRequest del = CreateRequest(Root + "/file/", "DELETE");
@@ -186,7 +230,7 @@ namespace SyncClipboardWin
             }
         }
 
-        public async Task UploadFileAsync(string localPath, string remoteName, Action<TransferProgress> progress)
+        public async Task UploadFileAsync(string localPath, string remoteName, Action<TransferProgress> progress, Func<bool> cancelled)
         {
             string url = Root + "/file/" + Uri.EscapeDataString(remoteName);
             FileInfo info = new FileInfo(localPath);
@@ -216,6 +260,7 @@ namespace SyncClipboardWin
                     while ((read = await input.ReadAsync(
                         buffer, 0, buffer.Length)) > 0)
                     {
+                        if (cancelled != null && cancelled()) throw new OperationCanceledException();
                         await output.WriteAsync(buffer, 0, read);
                         transferred += read;
 
@@ -240,7 +285,8 @@ namespace SyncClipboardWin
         public async Task DownloadFileAsync(
             string remoteName,
             string localPath,
-            Action<TransferProgress> progress)
+            Action<TransferProgress> progress,
+            Func<bool> cancelled)
         {
             string url = Root + "/file/" + Uri.EscapeDataString(remoteName);
             HttpWebRequest req = CreateRequest(url, "GET");
@@ -275,6 +321,7 @@ namespace SyncClipboardWin
                         while ((read = await input.ReadAsync(
                             buffer, 0, buffer.Length)) > 0)
                         {
+                            if (cancelled != null && cancelled()) throw new OperationCanceledException();
                             await output.WriteAsync(buffer, 0, read);
                             transferred += read;
 

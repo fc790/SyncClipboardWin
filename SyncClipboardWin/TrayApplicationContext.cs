@@ -19,7 +19,9 @@ namespace SyncClipboardWin
         private readonly SyncService _service;
         private readonly ToolStripMenuItem _profilesMenu;
         private readonly Timer _networkTimer;
+        private readonly Timer _directTimer;
         private bool _busy;
+        private bool _directCheckBusy;
         private string _lastClipboardSignature;
         private uint _lastClipboardSequence;
 
@@ -99,6 +101,15 @@ namespace SyncClipboardWin
             menu.Items.Add(_profilesMenu);
 
             menu.Items.Add(
+                "取消当前传输",
+                null,
+                async delegate
+                {
+                    _service.CancelCurrent();
+                    await _service.CancelPendingDirectAsync();
+                });
+
+            menu.Items.Add(
                 "设置",
                 null,
                 delegate
@@ -171,6 +182,17 @@ namespace SyncClipboardWin
             _networkTimer.Interval = 5000;
             _networkTimer.Tick += delegate { CheckAutoSwitch(); };
             _networkTimer.Start();
+
+            _directTimer = new Timer();
+            _directTimer.Interval = 2000;
+            _directTimer.Tick += async delegate
+            {
+                if (_busy || _directCheckBusy) return;
+                _directCheckBusy = true;
+                try { await _service.CheckPendingDirectUploadAsync(); }
+                finally { _directCheckBusy = false; }
+            };
+            _directTimer.Start();
 
             RegisterHotkeys(false);
 
@@ -350,6 +372,7 @@ namespace SyncClipboardWin
                 return;
 
             _busy = true;
+            _service.BeginOperation();
             ProgressForm progressForm = null;
 
             try
@@ -360,6 +383,7 @@ namespace SyncClipboardWin
                         if (progressForm == null)
                         {
                             progressForm = new ProgressForm();
+                            progressForm.CancelRequested += delegate { _service.CancelCurrent(); };
                             progressForm.Show();
                         }
 
@@ -380,6 +404,10 @@ namespace SyncClipboardWin
                         result,
                         ToolTipIcon.Info);
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                Notify(action + "已取消", "传输已取消。", ToolTipIcon.Info);
             }
             catch (Exception ex)
             {
@@ -495,15 +523,29 @@ namespace SyncClipboardWin
             try
             {
                 NetworkSnapshot snapshot = NetworkEnvironment.Capture();
+                AppSettings defaultProfile = null;
+
+                // 先检查所有普通规则。默认回退配置不参与这一轮，避免它提前抢占后面的规则。
                 for (int i = 0; i < _config.Profiles.Count; i++)
                 {
                     AppSettings p = _config.Profiles[i];
+                    if (p.AutoMatchDefault)
+                    {
+                        if (defaultProfile == null)
+                            defaultProfile = p;
+                        continue;
+                    }
+
                     if (NetworkEnvironment.IsMatch(p, snapshot))
                     {
                         SwitchProfile(p.Id, true);
                         return;
                     }
                 }
+
+                // 所有普通规则都未命中时，才使用默认回退配置。
+                if (defaultProfile != null)
+                    SwitchProfile(defaultProfile.Id, true);
             }
             catch { }
         }
@@ -513,6 +555,9 @@ namespace SyncClipboardWin
             _tray.Visible = false;
             _networkTimer.Stop();
             _networkTimer.Dispose();
+            _directTimer.Stop();
+            _directTimer.Dispose();
+            _service.Dispose();
             _tray.Dispose();
             _hotkeys.Dispose();
             ExitThread();

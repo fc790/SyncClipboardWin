@@ -11,13 +11,15 @@ namespace SyncClipboardWin
         private readonly Label _titleLabel;
         private readonly Label _detailLabel;
         private readonly ProgressBar _progressBar;
+        private readonly Button _cancelButton;
+        public event EventHandler CancelRequested;
 
         public ProgressForm()
         {
             FormBorderStyle = FormBorderStyle.FixedToolWindow;
             StartPosition = FormStartPosition.Manual;
             Location = new Point(0, 0);
-            Size = new Size(430, 94);
+            Size = new Size(520, 100);
             TopMost = true;
             ShowInTaskbar = false;
             MaximizeBox = false;
@@ -28,12 +30,12 @@ namespace SyncClipboardWin
             _titleLabel = new Label();
             _titleLabel.AutoSize = false;
             _titleLabel.Location = new Point(10, 8);
-            _titleLabel.Size = new Size(400, 20);
+            _titleLabel.Size = new Size(490, 20);
             _titleLabel.Text = "准备中...";
 
             _progressBar = new ProgressBar();
             _progressBar.Location = new Point(10, 31);
-            _progressBar.Size = new Size(400, 18);
+            _progressBar.Size = new Size(390, 18);
             _progressBar.Minimum = 0;
             _progressBar.Maximum = 100;
             _progressBar.Style = ProgressBarStyle.Continuous;
@@ -41,11 +43,24 @@ namespace SyncClipboardWin
             _detailLabel = new Label();
             _detailLabel.AutoSize = false;
             _detailLabel.Location = new Point(10, 53);
-            _detailLabel.Size = new Size(400, 18);
+            _detailLabel.Size = new Size(390, 18);
+
+            _cancelButton = new Button();
+            _cancelButton.Text = "取消传输";
+            _cancelButton.Location = new Point(410, 29);
+            _cancelButton.Size = new Size(90, 44);
+            _cancelButton.Click += delegate
+            {
+                _cancelButton.Enabled = false;
+                _cancelButton.Text = "正在取消...";
+                EventHandler handler = CancelRequested;
+                if (handler != null) handler(this, EventArgs.Empty);
+            };
 
             Controls.Add(_titleLabel);
             Controls.Add(_progressBar);
             Controls.Add(_detailLabel);
+            Controls.Add(_cancelButton);
         }
 
         protected override bool ShowWithoutActivation

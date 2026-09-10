@@ -1,6 +1,4 @@
-这是一个兼容syncclipboard协议webdav服务器的windows客户端,我还让AI写了个python的简单的生成webdav的软件.配合那个可以很容易的搭建云剪切板(云剪贴板),用AI写的,所以以下内容是AI的描述
-
- # SyncClipboardWin 0.3.0 - Windows 10 built-in compiler edition
+# SyncClipboardWin 0.3.0 - Windows 10 built-in compiler edition
 
 这是从 0.1.7 的 .NET 8 Self-Contained 版本迁移来的轻量版。
 
@@ -144,3 +142,44 @@ Microsoft.CSharp.dll
 - 一个配置内部可选择“全部已填写条件同时满足”或“任一已填写条件满足”。
 - 多个配置同时匹配时按设置中的配置列表顺序取第一个，以避免切换结果不确定。
 - 网络环境每 5 秒检查一次；传输进行中不会切换配置。
+
+
+## 0.3.1
+
+- 网络自动切换新增“默认回退配置”。
+- 可在任意一个配置中勾选“此配置作为默认回退配置（其他规则都不匹配时使用）”。
+- 自动切换时先按原有配置顺序检查所有普通匹配规则；只有全部未命中时，才切换到默认回退配置。
+- 默认回退配置不会参与普通规则匹配，因此不会提前抢占后续配置。
+- 默认回退配置全局只能有一个；选择新的默认项时会自动取消之前的默认项。
+- 未设置默认回退配置时，行为与 0.3.0 完全一致：全部规则不匹配则保持当前配置不变。
+
+
+## 0.3.2：局域网直传 + WebDAV 兜底
+
+新增“启用局域网点对点文件传输（WebDAV 兜底）”开关。默认关闭，关闭时行为与 0.3.1 一致。
+
+开启后，文件上传流程变为：
+
+1. 发送端计算文件/压缩包 SHA-256，但暂不上传文件到 WebDAV。
+2. WebDAV 根目录写入 `SyncClipboard.direct.json`，记录 `transferId`、随机 token、发送端 IPv4/掩码、TCP 端口、文件名、大小、hash、类型与状态。
+3. 标准 `SyncClipboard.json` 临时写成 `Text` 类型兼容提示，并包含本次 `transferId`。旧版 SyncClipboard 客户端仍可正常读取，不会去下载一个尚不存在的文件。
+4. 新版客户端读取云剪贴板时，如果发现两份元数据的 `transferId` 相符，会根据 IP 与掩码判断是否可能处于同一局域网；若是，则优先连接发送端 TCP 端口直接收文件。
+5. 直传成功后校验 SHA-256，然后按原来的 File / Image / Group 流程粘贴或解压。
+6. 如果不在同一局域网、TCP 无法连接、连接中断或 hash 校验失败，接收端会把 `SyncClipboard.direct.json` 状态改为 `upload_requested`。
+7. 发送端后台每 2 秒检查一次当前直传任务；看到 `upload_requested` 后才把文件上传至 WebDAV，并把标准 `SyncClipboard.json` 恢复成原来的文件元数据。接收端最多等待 60 秒后改走标准 WebDAV 下载。
+
+### TCP 直传
+
+默认端口 `45678`，每个配置可单独设置。监听地址为所有本机 IPv4 接口。Windows 防火墙必须允许该程序/端口被局域网访问。
+
+TCP 请求使用当前 `transferId` + 随机 token 验证。token 只写入经过 WebDAV 账户认证才能读取的 `SyncClipboard.direct.json`，不会写进兼容提示文本。
+
+### 取消传输
+
+传输进度窗口新增“取消传输”按钮；托盘菜单也新增“取消当前传输”。取消会停止当前 HTTP/TCP 数据流；如果仍处于“等待局域网直传”阶段，则同时把 direct 状态标记为 `cancelled` 并释放为压缩而保留的临时文件。
+
+### 注意
+
+- 这是兼容扩展协议，额外文件名固定为 `SyncClipboard.direct.json`。
+- 同一个 WebDAV 配置当前只维护一个最新直传任务，新的文件会替换旧的待直传任务，这与原 SyncClipboard “云剪贴板只有当前一份内容”的语义一致。
+- 如果发送端已经退出，而文件尚未上传到 WebDAV，接收端无法凭空取得该文件；此时会在等待 60 秒后提示发送端未响应。
