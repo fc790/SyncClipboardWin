@@ -1,6 +1,7 @@
-# SyncClipboardWin 0.3.0 - Windows 10 built-in compiler edition
+# SyncClipboardWin 0.3.2 - Windows 10 built-in compiler edition
 
 这是从 0.1.7 的 .NET 8 Self-Contained 版本迁移来的轻量版。
+这个版本支持tcp同一局域网直传
 
 ## 目标
 
